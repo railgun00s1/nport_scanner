@@ -14,9 +14,9 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRe
 # --- INIT ---
 console = Console()
 __author__ = "rlgn00s1"
-__version__ = "9.12"
+__version__ = "9.13 (re-scan function)"
 
-# --- CONFIGURATION ---
+
 # --- TOP 100 COMMON PORTS ---
 COMMON_PORTS = {
     7: "Echo", 9: "Discard", 13: "Daytime", 17: "QOTD", 19: "Chargen",
@@ -46,38 +46,35 @@ def print_help():
     [bold cyan]NETWORK SCANNER v{__version__}[/bold cyan]
     
     [bold]WORKFLOW[/bold]
-    1. Select Scan Mode (Top 100 or Custom).
-    2. Select Target Source (Import File or Manual Entry).
-    3. Configure Export (Filename and Path).
-    4. Select Speed (1-5).
+    1. Select Scan Mode.
+    2. Run Scan.
+    3. [bold green]NEW:[/bold green] After scan, choose "Re-scan" to adjust settings/file without restarting.
     
-    [bold]UPDATES[/bold]
-    - [green]Speed:[/green] Threading limits boosted for modern CPUs.
-    - [green]Stability:[/green] OS Detection removed to prevent timeouts.
-    - [green]Export:[/green] Binary data (NetBIOS/Raw) is now stripped from logs.
+    [bold]TIPS[/bold]
+    - If you get 0 results, choose Re-scan and select a [yellow]Normal[/yellow] speed.
+    - Export files always [bold]append[/bold] unless you provide a new name during re-scan.
     """)
     console.print(Panel(text, title="Help Manual", border_style="cyan"))
     console.input("[dim]Press Enter to return...[/dim]")
 
 def get_scan_speed():
     console.print("\n[bold]Select Scan Speed:[/bold]")
-    # Boosted thread counts for modern CPUs
-    console.print("1) [bold green]Insane[/bold green]   (0.5s timeout, 500 threads) - Max Saturation")
-    console.print("2) [green]Fast[/green]     (1.0s timeout, 200 threads) - Optimized LAN")
-    console.print("3) [yellow]Normal[/yellow]   (1.0s timeout, 100 threads) - Balanced")
+    console.print("1) [bold green]Insane[/bold green]   (0.8s timeout, 400 threads) - High Risk/Max Speed")
+    console.print("2) [green]Fast[/green]     (1.0s timeout, 200 threads) - Best for LAN")
+    console.print("3) [yellow]Normal[/yellow]   (1.5s timeout, 100 threads) - Reliable")
     console.print("4) [orange1]Careful[/orange1]  (2.0s timeout, 5 threads, 0.5s delay) - Stealthier")
     console.print("5) [red]Slow[/red]     (3.0s timeout, 1 thread, 1.0s delay) - Evade IDS")
     
     choice = console.input("[bold cyan]Select (1-5): [/bold cyan]").strip()
     
-    if choice == '1': return {'timeout': 0.5, 'delay': 0, 'threads': 500}
+    if choice == '1': return {'timeout': 0.8, 'delay': 0, 'threads': 400}
     if choice == '2': return {'timeout': 1.0, 'delay': 0, 'threads': 200}
-    if choice == '3': return {'timeout': 1.0, 'delay': 0.1, 'threads': 100}
+    if choice == '3': return {'timeout': 1.5, 'delay': 0.1, 'threads': 100}
     if choice == '4': return {'timeout': 2.0, 'delay': 0.5, 'threads': 5}
     if choice == '5': return {'timeout': 3.0, 'delay': 1.0, 'threads': 1}
     
     console.print("[dim]Invalid choice, defaulting to Normal (3)[/dim]")
-    return {'timeout': 1.0, 'delay': 0.1, 'threads': 100}
+    return {'timeout': 1.5, 'delay': 0.1, 'threads': 100}
 
 def configure_export():
     console.print("\n[bold]Export Configuration:[/bold]")
@@ -149,7 +146,6 @@ def import_targets_from_file(filepath):
 
 def resolve_target_list(target_input):
     target_list = []
-    # TYPE 1: RANGE
     if "-" in target_input:
         parts = target_input.split("-")
         if len(parts) == 2:
@@ -172,7 +168,6 @@ def resolve_target_list(target_input):
             except ValueError:
                 pass
 
-    # TYPE 2: CIDR
     try:
         network = ipaddress.ip_network(target_input, strict=False)
         for ip in network.hosts():
@@ -181,7 +176,6 @@ def resolve_target_list(target_input):
     except ValueError:
         pass
 
-    # TYPE 3: SINGLE HOST
     target_list.append(target_input)
     return target_list
 
@@ -198,17 +192,14 @@ def scan_port(ip, port, timeout, delay):
             service = COMMON_PORTS.get(port, "Unknown")
             banner = ""
             try:
-                s.settimeout(1.5) # Slight bump for banner grab stability
+                s.settimeout(1.5) 
                 if port in [80, 8080, 443, 8443]:
                     s.send(b'HEAD / HTTP/1.1\r\n\r\n')
                 else:
                     s.send(b'Hello\r\n')
                 
                 banner_bytes = s.recv(1024)
-                # Decode safely
                 raw_banner = banner_bytes.decode('utf-8', errors='ignore').strip()
-                
-                # SANITIZATION: Only keep printable chars to fix Export errors
                 banner = "".join(ch for ch in raw_banner if ch.isprintable())
                 
             except:
@@ -251,7 +242,6 @@ def run_scan(targets, ports, speed_config, export_path=None):
             
             open_ports = []
             
-            # Use ThreadPoolExecutor - Most efficient for Network I/O
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
                 futures = {executor.submit(scan_port, ip, port, timeout, delay): port for port in ports}
                 
@@ -273,14 +263,10 @@ def run_scan(targets, ports, speed_config, export_path=None):
                 session_log += f"\nHost: {ip}\n"
 
                 for p, s, b in open_ports:
-                    # Clean display for console
                     display_banner = b if b else "-"
                     if len(display_banner) > 50:
                         display_banner = display_banner[:47] + "..."
-                    
                     table.add_row(str(p), s, display_banner)
-                    
-                    # Log the clean full banner
                     clean_log_banner = b if b else "-"
                     session_log += f"  [+] {p}/tcp - {s} - {clean_log_banner}\n"
                 
@@ -291,14 +277,60 @@ def run_scan(targets, ports, speed_config, export_path=None):
 
     if export_path:
         try:
-            # Force UTF-8 encoding to prevent Windows write errors
             with open(export_path, "a", encoding="utf-8") as f:
                 f.write(session_log + "\n" + "-"*40 + "\n")
-            console.print(f"\n[bold green][✓] Results successfully exported to: {export_path}[/bold green]")
+            console.print(f"\n[bold green][✓] Results exported to: {export_path}[/bold green]")
         except Exception as e:
             console.print(f"\n[bold red][!] Error writing to file: {e}[/bold red]")
     
-    console.input("\n[dim]Scan complete. Press Enter to continue...[/dim]")
+    console.print("\n[bold yellow]--- Scan Complete ---[/bold yellow]")
+
+def start_scan_session(targets, ports):
+    # Initial Setup
+    export_path = configure_export()
+    speed_config = get_scan_speed()
+
+    while True:
+        # Run the actual scan
+        run_scan(targets, ports, speed_config, export_path)
+
+        # Post-Scan Menu
+        console.print("\n[bold]What would you like to do?[/bold]")
+        console.print("1) [green]Re-scan same targets[/green] (Adjust Speed/File)")
+        console.print("2) [cyan]New Target Selection[/cyan] (Main Menu)")
+        console.print("3) [red]Exit Program[/red]")
+        
+        choice = console.input("[bold cyan]Select > [/bold cyan]").strip()
+
+        if choice == '1':
+            console.print(Panel("RE-SCAN CONFIGURATION", border_style="green"))
+            
+            # 1. Adjust Speed
+            console.print(f"Current Speed: [bold]{speed_config['threads']} threads[/bold] (Timeout: {speed_config['timeout']}s)")
+            if console.input("Change Speed? (y/N): ").lower() == 'y':
+                speed_config = get_scan_speed()
+            
+            # 2. Adjust File
+            if export_path:
+                console.print(f"Current Export File: [bold]{export_path}[/bold]")
+                console.print("[dim]Note: Default behavior is to APPEND to this file.[/dim]")
+                if console.input("Change Filename? (y/N): ").lower() == 'y':
+                     export_path = configure_export()
+            else:
+                 if console.input("Enable Export for this run? (y/N): ").lower() == 'y':
+                     export_path = configure_export()
+            
+            console.print("\n[dim]Re-initializing scan...[/dim]")
+            continue # Loops back to run_scan
+            
+        elif choice == '2':
+            break # Breaks session loop, returns to __main__
+        elif choice == '3':
+            console.print("[bold]Exiting...[/bold]")
+            sys.exit()
+        else:
+            console.print("[red]Invalid selection. Returning to menu.[/red]")
+            continue
 
 # --- MAIN ---
 if __name__ == "__main__":
@@ -340,9 +372,8 @@ if __name__ == "__main__":
             
             ports = list(COMMON_PORTS.keys())
             
-            export_path = configure_export()
-            speed_config = get_scan_speed()
-            run_scan(targets, ports, speed_config, export_path)
+            # Enter Session Loop
+            start_scan_session(targets, ports)
 
         elif choice == '2':
             t_in = console.input("Target IP/Range: ")
@@ -358,9 +389,8 @@ if __name__ == "__main__":
                 e_p = int(console.input("End Port:   "))
                 ports = list(range(s_p, e_p + 1))
                 
-                export_path = configure_export()
-                speed_config = get_scan_speed()
-                run_scan(targets, ports, speed_config, export_path)
+                # Enter Session Loop
+                start_scan_session(targets, ports)
             except ValueError:
                 console.print("[red]Invalid port numbers.[/red]")
                 time.sleep(1)
