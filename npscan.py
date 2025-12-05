@@ -14,11 +14,9 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRe
 # --- INIT ---
 console = Console()
 __author__ = "rlgn00s1"
-__version__ = "9.9"
+__version__ = "9.12"
 
 # --- CONFIGURATION ---
-DEFAULT_THREADS = 100
-
 # --- TOP 100 COMMON PORTS ---
 COMMON_PORTS = {
     7: "Echo", 9: "Discard", 13: "Daytime", 17: "QOTD", 19: "Chargen",
@@ -53,41 +51,35 @@ def print_help():
     3. Configure Export (Filename and Path).
     4. Select Speed (1-5).
     
-    [bold]SPEED SETTINGS[/bold]
-    - Levels 1-3 use multi-threading (Fast).
-    - Levels 4-5 use single-threading with delays (Stealthy/Slow).
+    [bold]UPDATES[/bold]
+    - [green]Speed:[/green] Threading limits boosted for modern CPUs.
+    - [green]Stability:[/green] OS Detection removed to prevent timeouts.
+    - [green]Export:[/green] Binary data (NetBIOS/Raw) is now stripped from logs.
     """)
     console.print(Panel(text, title="Help Manual", border_style="cyan"))
     console.input("[dim]Press Enter to return...[/dim]")
 
 def get_scan_speed():
-    """
-    Returns a dictionary with speed settings:
-    { 'timeout': float, 'delay': float, 'threads': int }
-    """
     console.print("\n[bold]Select Scan Speed:[/bold]")
-    console.print("1) [bold green]Quick[/bold green]   (0.5s timeout, 100 threads) - Noisy/Fast")
-    console.print("2) [green]Fast[/green]    (1.0s timeout, 100 threads) - Standard LAN")
-    console.print("3) [yellow]Normal[/yellow]  (1.0s timeout, 50 threads, 0.1s delay)")
-    console.print("4) [orange1]Careful[/orange1] (2.0s timeout, 1 thread, 0.5s delay) - Stealthier")
-    console.print("5) [red]Slow[/red]    (3.0s timeout, 1 thread, 1.0s delay) - Very Slow/Stealthy")
+    # Boosted thread counts for modern CPUs
+    console.print("1) [bold green]Insane[/bold green]   (0.5s timeout, 500 threads) - Max Saturation")
+    console.print("2) [green]Fast[/green]     (1.0s timeout, 200 threads) - Optimized LAN")
+    console.print("3) [yellow]Normal[/yellow]   (1.0s timeout, 100 threads) - Balanced")
+    console.print("4) [orange1]Careful[/orange1]  (2.0s timeout, 5 threads, 0.5s delay) - Stealthier")
+    console.print("5) [red]Slow[/red]     (3.0s timeout, 1 thread, 1.0s delay) - Evade IDS")
     
     choice = console.input("[bold cyan]Select (1-5): [/bold cyan]").strip()
     
-    if choice == '1': return {'timeout': 0.5, 'delay': 0, 'threads': 100}
-    if choice == '2': return {'timeout': 1.0, 'delay': 0, 'threads': 100}
-    if choice == '3': return {'timeout': 1.0, 'delay': 0.1, 'threads': 50}
-    if choice == '4': return {'timeout': 2.0, 'delay': 0.5, 'threads': 1}
+    if choice == '1': return {'timeout': 0.5, 'delay': 0, 'threads': 500}
+    if choice == '2': return {'timeout': 1.0, 'delay': 0, 'threads': 200}
+    if choice == '3': return {'timeout': 1.0, 'delay': 0.1, 'threads': 100}
+    if choice == '4': return {'timeout': 2.0, 'delay': 0.5, 'threads': 5}
     if choice == '5': return {'timeout': 3.0, 'delay': 1.0, 'threads': 1}
     
     console.print("[dim]Invalid choice, defaulting to Normal (3)[/dim]")
-    return {'timeout': 1.0, 'delay': 0.1, 'threads': 50}
+    return {'timeout': 1.0, 'delay': 0.1, 'threads': 100}
 
 def configure_export():
-    """
-    Asks user for export details BEFORE scan.
-    Returns full path or None.
-    """
     console.print("\n[bold]Export Configuration:[/bold]")
     choice = console.input("Do you want to save the results? (y/n): ").lower().strip()
     
@@ -143,14 +135,12 @@ def import_targets_from_file(filepath):
         
         unique_targets = list(dict.fromkeys(all_targets))
         
-        # --- PREVIEW TARGETS ---
         if unique_targets:
             console.print(f"[green]Successfully loaded {len(unique_targets)} targets:[/green]")
             for t in unique_targets:
                 console.print(f"  [cyan]- {t}[/cyan]")
         else:
             console.print("[yellow]No valid targets found in file.[/yellow]")
-        # -----------------------
 
         return unique_targets
     except Exception as e:
@@ -208,13 +198,19 @@ def scan_port(ip, port, timeout, delay):
             service = COMMON_PORTS.get(port, "Unknown")
             banner = ""
             try:
-                s.settimeout(1.0) 
+                s.settimeout(1.5) # Slight bump for banner grab stability
                 if port in [80, 8080, 443, 8443]:
                     s.send(b'HEAD / HTTP/1.1\r\n\r\n')
                 else:
                     s.send(b'Hello\r\n')
+                
                 banner_bytes = s.recv(1024)
-                banner = banner_bytes.decode('utf-8', errors='ignore').strip()
+                # Decode safely
+                raw_banner = banner_bytes.decode('utf-8', errors='ignore').strip()
+                
+                # SANITIZATION: Only keep printable chars to fix Export errors
+                banner = "".join(ch for ch in raw_banner if ch.isprintable())
+                
             except:
                 banner = None
             s.close()
@@ -232,10 +228,10 @@ def run_scan(targets, ports, speed_config, export_path=None):
     max_threads = speed_config['threads']
     
     console.print(f"\n[bold green][*] Starting Scan on {total_hosts} hosts...[/bold green]")
-    console.print(f"[dim]Configuration: Timeout={timeout}s | Delay={delay}s | Threads={max_threads}[/dim]")
+    console.print(f"[dim]Configuration: Timeout={timeout}s | Threads={max_threads}[/dim]")
     
     session_log = f"=== SCAN SESSION: {datetime.now()} ===\n"
-    session_log += f"Config: Timeout={timeout}s, Delay={delay}s\n"
+    session_log += f"Config: Timeout={timeout}s, Threads={max_threads}\n"
     
     with Progress(
         SpinnerColumn(),
@@ -255,6 +251,7 @@ def run_scan(targets, ports, speed_config, export_path=None):
             
             open_ports = []
             
+            # Use ThreadPoolExecutor - Most efficient for Network I/O
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
                 futures = {executor.submit(scan_port, ip, port, timeout, delay): port for port in ports}
                 
@@ -267,6 +264,7 @@ def run_scan(targets, ports, speed_config, export_path=None):
                 open_ports.sort(key=lambda x: x[0])
                 
                 table_output = f"\n[bold cyan]Found on {ip}:[/bold cyan]\n"
+                
                 table = Table(show_header=True, header_style="bold magenta", box=None)
                 table.add_column("Port", style="cyan", width=8)
                 table.add_column("Service", style="green")
@@ -275,9 +273,16 @@ def run_scan(targets, ports, speed_config, export_path=None):
                 session_log += f"\nHost: {ip}\n"
 
                 for p, s, b in open_ports:
-                    b_text = b[:30] + "..." if b and len(b) > 30 else (b or "-")
-                    table.add_row(str(p), s, b_text)
-                    session_log += f"  [+] {p}/tcp - {s} - {b_text}\n"
+                    # Clean display for console
+                    display_banner = b if b else "-"
+                    if len(display_banner) > 50:
+                        display_banner = display_banner[:47] + "..."
+                    
+                    table.add_row(str(p), s, display_banner)
+                    
+                    # Log the clean full banner
+                    clean_log_banner = b if b else "-"
+                    session_log += f"  [+] {p}/tcp - {s} - {clean_log_banner}\n"
                 
                 progress.console.print(table_output)
                 progress.console.print(table)
@@ -286,7 +291,8 @@ def run_scan(targets, ports, speed_config, export_path=None):
 
     if export_path:
         try:
-            with open(export_path, "a") as f:
+            # Force UTF-8 encoding to prevent Windows write errors
+            with open(export_path, "a", encoding="utf-8") as f:
                 f.write(session_log + "\n" + "-"*40 + "\n")
             console.print(f"\n[bold green][✓] Results successfully exported to: {export_path}[/bold green]")
         except Exception as e:
