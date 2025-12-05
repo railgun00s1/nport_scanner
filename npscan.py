@@ -4,6 +4,7 @@ import time
 import ipaddress
 import textwrap
 import concurrent.futures
+import os
 from datetime import datetime
 from rich.console import Console
 from rich.table import Table
@@ -13,11 +14,10 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRe
 # --- INIT ---
 console = Console()
 __author__ = "rlgn00s1"
-__version__ = "9.6"
+__version__ = "9.9"
 
 # --- CONFIGURATION ---
 DEFAULT_THREADS = 100
-LOG_FILE = "scan_reports.txt"
 
 # --- TOP 100 COMMON PORTS ---
 COMMON_PORTS = {
@@ -47,70 +47,137 @@ def print_help():
     text = textwrap.dedent(f"""
     [bold cyan]NETWORK SCANNER v{__version__}[/bold cyan]
     
-    [bold]1. SCAN MODES[/bold]
-    - Option 1 (Top 100): Scans the most critical 100 ports.
-    - Option 2 (Custom): Scans a manual range (e.g., 1-65535).
+    [bold]WORKFLOW[/bold]
+    1. Select Scan Mode (Top 100 or Custom).
+    2. Select Target Source (Import File or Manual Entry).
+    3. Configure Export (Filename and Path).
+    4. Select Speed (1-5).
     
-    [bold]2. SPACE SAVER UI[/bold]
-    - The tool uses a single Global Progress Bar.
-    - It will ONLY print detailed tables if OPEN ports are found.
+    [bold]SPEED SETTINGS[/bold]
+    - Levels 1-3 use multi-threading (Fast).
+    - Levels 4-5 use single-threading with delays (Stealthy/Slow).
     """)
     console.print(Panel(text, title="Help Manual", border_style="cyan"))
     console.input("[dim]Press Enter to return...[/dim]")
 
 def get_scan_speed():
+    """
+    Returns a dictionary with speed settings:
+    { 'timeout': float, 'delay': float, 'threads': int }
+    """
     console.print("\n[bold]Select Scan Speed:[/bold]")
-    console.print("1) [green]Fast[/green]   (0.5s timeout) - Best for LAN/WiFi")
-    console.print("2) [yellow]Normal[/yellow] (1.0s timeout) - Balanced")
-    console.print("3) [red]Slow[/red]   (2.0s timeout) - For laggy/remote networks")
+    console.print("1) [bold green]Quick[/bold green]   (0.5s timeout, 100 threads) - Noisy/Fast")
+    console.print("2) [green]Fast[/green]    (1.0s timeout, 100 threads) - Standard LAN")
+    console.print("3) [yellow]Normal[/yellow]  (1.0s timeout, 50 threads, 0.1s delay)")
+    console.print("4) [orange1]Careful[/orange1] (2.0s timeout, 1 thread, 0.5s delay) - Stealthier")
+    console.print("5) [red]Slow[/red]    (3.0s timeout, 1 thread, 1.0s delay) - Very Slow/Stealthy")
     
-    choice = console.input("[bold cyan]Select (1-3): [/bold cyan]").strip()
-    if choice == '1': return 0.5
-    if choice == '3': return 2.0
-    return 1.0  # Default to Normal
+    choice = console.input("[bold cyan]Select (1-5): [/bold cyan]").strip()
+    
+    if choice == '1': return {'timeout': 0.5, 'delay': 0, 'threads': 100}
+    if choice == '2': return {'timeout': 1.0, 'delay': 0, 'threads': 100}
+    if choice == '3': return {'timeout': 1.0, 'delay': 0.1, 'threads': 50}
+    if choice == '4': return {'timeout': 2.0, 'delay': 0.5, 'threads': 1}
+    if choice == '5': return {'timeout': 3.0, 'delay': 1.0, 'threads': 1}
+    
+    console.print("[dim]Invalid choice, defaulting to Normal (3)[/dim]")
+    return {'timeout': 1.0, 'delay': 0.1, 'threads': 50}
 
-def save_log(content):
+def configure_export():
+    """
+    Asks user for export details BEFORE scan.
+    Returns full path or None.
+    """
+    console.print("\n[bold]Export Configuration:[/bold]")
+    choice = console.input("Do you want to save the results? (y/n): ").lower().strip()
+    
+    if choice not in ['y', 'yes']:
+        console.print("[yellow]Results will NOT be saved.[/yellow]")
+        return None
+
+    filename = console.input("Enter file name (e.g., scan.txt): ").strip()
+    if not filename:
+        console.print("[red]No filename provided. Export disabled.[/red]")
+        return None
+        
+    path = console.input("Enter folder path (Press Enter for current folder): ").strip()
+    
+    full_path = ""
+    if not path:
+        full_path = os.path.abspath(filename)
+        console.print(f"[dim]Saving to current folder: {full_path}[/dim]")
+    else:
+        if not os.path.exists(path):
+            try:
+                os.makedirs(path)
+                console.print(f"[green]Created directory: {path}[/green]")
+            except OSError as e:
+                console.print(f"[bold red]Error creating directory: {e}[/bold red]")
+                return None
+        full_path = os.path.join(path, filename)
+        console.print(f"[dim]Saving to: {full_path}[/dim]")
+        
+    return full_path
+
+def import_targets_from_file(filepath):
+    if not os.path.exists(filepath):
+        console.print(f"[bold red]Error: File '{filepath}' not found.[/bold red]")
+        return []
+
+    all_targets = []
     try:
-        with open(LOG_FILE, "a") as f:
-            f.write(content + "\n")
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+            
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]Parsing file..."),
+            transient=True
+        ) as progress:
+            progress.add_task("parsing")
+            for line in lines:
+                line = line.strip()
+                if line:
+                    targets = resolve_target_list(line)
+                    all_targets.extend(targets)
+        
+        unique_targets = list(dict.fromkeys(all_targets))
+        
+        # --- PREVIEW TARGETS ---
+        if unique_targets:
+            console.print(f"[green]Successfully loaded {len(unique_targets)} targets:[/green]")
+            for t in unique_targets:
+                console.print(f"  [cyan]- {t}[/cyan]")
+        else:
+            console.print("[yellow]No valid targets found in file.[/yellow]")
+        # -----------------------
+
+        return unique_targets
     except Exception as e:
-        console.print(f"[red][!] Error saving log: {e}[/red]")
+        console.print(f"[red]Error reading file: {e}[/red]")
+        return []
 
 def resolve_target_list(target_input):
     target_list = []
-    
     # TYPE 1: RANGE
     if "-" in target_input:
         parts = target_input.split("-")
         if len(parts) == 2:
             try:
-                start_ip_str = parts[0].strip()
-                end_part_str = parts[1].strip()
-                start_ip_obj = ipaddress.IPv4Address(start_ip_str)
-                
-                if "." in end_part_str:
-                    end_ip_obj = ipaddress.IPv4Address(end_part_str)
-                    start_octets = str(start_ip_obj).split('.')
-                    end_octets = str(end_ip_obj).split('.')
-                    
-                    if start_octets[:3] != end_octets[:3]:
-                        console.print("[red]Error: Ranges must be in same /24 subnet.[/red]")
-                        return []
-                    end_val = int(end_octets[3])
-                    base_ip = ".".join(start_octets[:3])
+                start_ip = ipaddress.IPv4Address(parts[0].strip())
+                end_val = parts[1].strip()
+                if "." in end_val:
+                    end_ip = ipaddress.IPv4Address(end_val)
                 else:
-                    end_val = int(end_part_str)
-                    octets = str(start_ip_obj).split('.')
-                    base_ip = ".".join(octets[:3])
+                    base = str(start_ip).rsplit('.', 1)[0]
+                    end_ip = ipaddress.IPv4Address(f"{base}.{end_val}")
                 
-                start_val = int(str(start_ip_obj).split('.')[3])
+                start_int = int(start_ip)
+                end_int = int(end_ip)
                 
-                if end_val < start_val or end_val > 255:
-                    console.print("[red]Error: Invalid range.[/red]")
-                    return []
-                
-                for i in range(start_val, end_val + 1):
-                    target_list.append(f"{base_ip}.{i}")
+                if end_int >= start_int:
+                    for ip_int in range(start_int, end_int + 1):
+                        target_list.append(str(ipaddress.IPv4Address(ip_int)))
                 return target_list
             except ValueError:
                 pass
@@ -128,7 +195,10 @@ def resolve_target_list(target_input):
     target_list.append(target_input)
     return target_list
 
-def scan_port(ip, port, timeout):
+def scan_port(ip, port, timeout, delay):
+    if delay > 0:
+        time.sleep(delay)
+        
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
@@ -138,17 +208,15 @@ def scan_port(ip, port, timeout):
             service = COMMON_PORTS.get(port, "Unknown")
             banner = ""
             try:
-                s.settimeout(1.0)
+                s.settimeout(1.0) 
                 if port in [80, 8080, 443, 8443]:
                     s.send(b'HEAD / HTTP/1.1\r\n\r\n')
                 else:
                     s.send(b'Hello\r\n')
-                
                 banner_bytes = s.recv(1024)
                 banner = banner_bytes.decode('utf-8', errors='ignore').strip()
             except:
                 banner = None
-            
             s.close()
             return (port, service, banner)
         
@@ -157,13 +225,18 @@ def scan_port(ip, port, timeout):
     except:
         return None
 
-def run_scan(targets, ports, timeout):
+def run_scan(targets, ports, speed_config, export_path=None):
     total_hosts = len(targets)
-    console.print(f"\n[bold green][*] Starting Scan on {total_hosts} hosts (Threads: {DEFAULT_THREADS})...[/bold green]")
-    console.print("[dim][*] Only displaying hosts with OPEN ports.[/dim]\n")
+    timeout = speed_config['timeout']
+    delay = speed_config['delay']
+    max_threads = speed_config['threads']
     
-    session_log = f"\n=== SCAN SESSION: {datetime.now()} ===\n"
-
+    console.print(f"\n[bold green][*] Starting Scan on {total_hosts} hosts...[/bold green]")
+    console.print(f"[dim]Configuration: Timeout={timeout}s | Delay={delay}s | Threads={max_threads}[/dim]")
+    
+    session_log = f"=== SCAN SESSION: {datetime.now()} ===\n"
+    session_log += f"Config: Timeout={timeout}s, Delay={delay}s\n"
+    
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -182,8 +255,8 @@ def run_scan(targets, ports, timeout):
             
             open_ports = []
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=DEFAULT_THREADS) as executor:
-                futures = {executor.submit(scan_port, ip, port, timeout): port for port in ports}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
+                futures = {executor.submit(scan_port, ip, port, timeout, delay): port for port in ports}
                 
                 for future in concurrent.futures.as_completed(futures):
                     result = future.result()
@@ -194,7 +267,6 @@ def run_scan(targets, ports, timeout):
                 open_ports.sort(key=lambda x: x[0])
                 
                 table_output = f"\n[bold cyan]Found on {ip}:[/bold cyan]\n"
-                
                 table = Table(show_header=True, header_style="bold magenta", box=None)
                 table.add_column("Port", style="cyan", width=8)
                 table.add_column("Service", style="green")
@@ -212,16 +284,23 @@ def run_scan(targets, ports, timeout):
             
             progress.advance(main_task)
 
-    save_log(session_log)
-    console.print(f"\n[bold green][✓] Scan Complete. Saved to {LOG_FILE}[/bold green]")
+    if export_path:
+        try:
+            with open(export_path, "a") as f:
+                f.write(session_log + "\n" + "-"*40 + "\n")
+            console.print(f"\n[bold green][✓] Results successfully exported to: {export_path}[/bold green]")
+        except Exception as e:
+            console.print(f"\n[bold red][!] Error writing to file: {e}[/bold red]")
+    
+    console.input("\n[dim]Scan complete. Press Enter to continue...[/dim]")
 
 # --- MAIN ---
 if __name__ == "__main__":
-    console.clear()
-    console.print(Panel.fit(f"[bold green]PYTHON NETWORK SCANNER v{__version__}[/bold green]\nBy: {__author__}", border_style="green"))
-    
     while True:
-        console.print("\n[bold]1)[/bold] Top 100 Ports (Quick)")
+        console.clear()
+        console.print(Panel.fit(f"[bold green]PYTHON NETWORK SCANNER v{__version__}[/bold green]\nBy: {__author__}", border_style="green"))
+        
+        console.print("\n[bold]1)[/bold] Top 100 Ports")
         console.print("[bold]2)[/bold] Custom Range")
         console.print("[bold]3)[/bold] Help")
         console.print("[bold]4)[/bold] Exit")
@@ -232,29 +311,57 @@ if __name__ == "__main__":
         ports = []
         
         if choice == '1':
-            t_in = console.input("Target IP/Range: ")
-            targets = resolve_target_list(t_in)
-            if not targets: continue
+            console.print("\n[bold]Target Selection:[/bold]")
+            console.print("a) Import File")
+            console.print("b) Enter Manually")
+            sub_choice = console.input("[bold cyan]Select (a/b): [/bold cyan]").strip().lower()
+            
+            if sub_choice == 'a':
+                f_path = console.input("Enter file path: ").strip()
+                targets = import_targets_from_file(f_path)
+            elif sub_choice == 'b':
+                t_in = console.input("Enter Target IP/Range: ")
+                targets = resolve_target_list(t_in)
+            else:
+                console.print("[red]Invalid selection.[/red]")
+                time.sleep(1)
+                continue
+                
+            if not targets:
+                console.print("[red]No valid targets found.[/red]")
+                time.sleep(1)
+                continue
             
             ports = list(COMMON_PORTS.keys())
-            timeout = get_scan_speed() # ADDED BACK
-            run_scan(targets, ports, timeout)
             
+            export_path = configure_export()
+            speed_config = get_scan_speed()
+            run_scan(targets, ports, speed_config, export_path)
+
         elif choice == '2':
             t_in = console.input("Target IP/Range: ")
             targets = resolve_target_list(t_in)
-            if not targets: continue
+            
+            if not targets: 
+                console.print("[red]No targets found.[/red]")
+                time.sleep(1)
+                continue
             
             try:
                 s_p = int(console.input("Start Port: "))
                 e_p = int(console.input("End Port:   "))
                 ports = list(range(s_p, e_p + 1))
-                timeout = get_scan_speed() # ADDED BACK
-                run_scan(targets, ports, timeout)
+                
+                export_path = configure_export()
+                speed_config = get_scan_speed()
+                run_scan(targets, ports, speed_config, export_path)
             except ValueError:
                 console.print("[red]Invalid port numbers.[/red]")
-                
+                time.sleep(1)
+
         elif choice == '3':
             print_help()
+
         elif choice == '4':
+            console.print("[bold]Exiting...[/bold]")
             sys.exit()
