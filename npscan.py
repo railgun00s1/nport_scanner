@@ -3,319 +3,258 @@ import sys
 import time
 import ipaddress
 import textwrap
+import concurrent.futures
 from datetime import datetime
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn
 
-# --- METADATA ---
-__author__ = "DCR"
-__version__ = "8.2 (Flex Range + UI Fixes)"
+# --- INIT ---
+console = Console()
+__author__ = "rlgn00s1"
+__version__ = "9.6"
 
-# --- ETHICAL WARNING ---
-# This tool is built for educational and defensive analysis purposes only.
-# Port scanning targets without permission is illegal in many jurisdictions.
-# The author is not responsible for any misuse of this tool.
-# Always obtain written permission before scanning networks you do not own.
-# -----------------------
+# --- CONFIGURATION ---
+DEFAULT_THREADS = 100
+LOG_FILE = "scan_reports.txt"
 
-# --- ANSI COLOR CODES ---
-YELLOW = "\033[93m"
-GREEN  = "\033[32m"
-RED    = "\033[91m"
-CYAN   = "\033[96m"
-RESET  = "\033[0m"
-
+# --- TOP 100 COMMON PORTS ---
 COMMON_PORTS = {
-    20: "FTP Data", 21: "FTP Control", 22: "SSH", 23: "Telnet",
-    25: "SMTP", 53: "DNS", 80: "HTTP", 110: "POP3",
-    139: "NetBIOS", 143: "IMAP", 443: "HTTPS", 445: "SMB",
-    3389: "RDP", 8080: "HTTP Proxy"
+    7: "Echo", 9: "Discard", 13: "Daytime", 17: "QOTD", 19: "Chargen",
+    20: "FTP Data", 21: "FTP Control", 22: "SSH", 23: "Telnet", 25: "SMTP",
+    26: "RSFTP", 37: "Time", 42: "WINS", 49: "TACACS", 53: "DNS",
+    67: "DHCP", 68: "DHCP", 69: "TFTP", 70: "Gopher", 79: "Finger",
+    80: "HTTP", 81: "HTTP Alt", 88: "Kerberos", 102: "Siemens S7", 110: "POP3",
+    111: "RPCbind", 113: "Ident", 119: "NNTP", 123: "NTP", 135: "RPC",
+    137: "NetBIOS", 138: "NetBIOS", 139: "NetBIOS", 143: "IMAP", 161: "SNMP",
+    179: "BGP", 194: "IRC", 201: "AppleTalk", 264: "BGMP", 389: "LDAP",
+    443: "HTTPS", 445: "SMB", 465: "SMTPS", 500: "IKE", 513: "Rlogin",
+    514: "Syslog", 515: "LPD", 520: "RIP", 548: "AFP", 554: "RTSP",
+    587: "SMTP Sub", 631: "IPP", 636: "LDAPS", 873: "Rsync", 902: "VMware",
+    989: "FTPS", 990: "FTPS", 993: "IMAPS", 995: "POP3S", 1025: "MS RPC",
+    1026: "MS RPC", 1027: "MS RPC", 1080: "SOCKS", 1194: "OpenVPN", 1433: "SQL Server",
+    1434: "SQL Monitor", 1521: "Oracle", 1720: "H.323", 1723: "PPTP", 2049: "NFS",
+    2082: "cPanel", 2083: "cPanel SSL", 2121: "FTP Alt", 3306: "MySQL", 3389: "RDP",
+    3690: "SVN", 4333: "mSQL", 4444: "Metasploit", 4899: "Radmin", 5000: "UPnP",
+    5432: "PostgreSQL", 5631: "pcAnywhere", 5800: "VNC HTTP", 5900: "VNC", 5901: "VNC-1",
+    6000: "X11", 6001: "X11", 6379: "Redis", 6667: "IRC", 7001: "WebLogic",
+    8000: "HTTP Alt", 8008: "HTTP Alt", 8080: "HTTP Proxy", 8081: "HTTP Alt", 8443: "HTTPS Alt",
+    8888: "HTTP Alt", 9000: "Sonarqube", 9090: "Websphere", 9200: "Elasticsearch", 27017: "MongoDB"
 }
 
 def print_help():
-    help_text = textwrap.dedent(f"""
-    ============================================================
-    NETWORK SCANNER MANUAL (v{__version__})
-    ============================================================
-     
-    1. TARGET FORMATS
-       You can enter targets in three ways:
-       - Single IP:    192.168.1.5
-       - CIDR Subnet:  192.168.1.0/24 (Scans .1 to .254)
-       - IP Range A:   192.168.1.5 - 10 (Scans .5 to .10)
-       - IP Range B:   192.168.1.5 - 192.168.1.10
-
-    2. SCAN MODES
-       - Quick Scan:   Checks only the top 14 most common ports
-                       (20: "FTP", 
-                        21: "FTP", 
-                        22: "SSH", 
-                        23: "Telnet",
-                        25: "SMTP", 
-                        53: "DNS", 
-                        80: "HTTP", 
-                        110: "POP3",
-                        139: "NetBIOS", 
-                        143: "IMAP", 
-                        443: "HTTPS", 
-                        445: "SMB",
-                        3389: "RDP", 
-                        8080: "HTTP Proxy").
-       - Custom Scan:  Lets you define a specific numeric range
-                       (e.g., Port 1 to 65535).
-
-    3. SCAN SPEED (TIMEOUTS)
-       - Fast (0.5s):  Best for local WiFi/LAN. Fast but might miss
-                       ports on slow internet connections.
-       - Normal (1.0s): Balanced. Good for most uses.
-       - Slow (2.0s):  Stealthier and accurate for laggy remote servers.
-
-    4. CONTROLS
-       - Back:         Type 'b' at any prompt to return to the menu.
-       - Cancel:       Press 'Ctrl+C' during a scan to stop immediately
-                       and generate a partial report.
-     
-    ============================================================
+    text = textwrap.dedent(f"""
+    [bold cyan]NETWORK SCANNER v{__version__}[/bold cyan]
+    
+    [bold]1. SCAN MODES[/bold]
+    - Option 1 (Top 100): Scans the most critical 100 ports.
+    - Option 2 (Custom): Scans a manual range (e.g., 1-65535).
+    
+    [bold]2. SPACE SAVER UI[/bold]
+    - The tool uses a single Global Progress Bar.
+    - It will ONLY print detailed tables if OPEN ports are found.
     """)
-    print(help_text)
-    input("[*] Press Enter to return to menu...")
+    console.print(Panel(text, title="Help Manual", border_style="cyan"))
+    console.input("[dim]Press Enter to return...[/dim]")
 
 def get_scan_speed():
-    print("\n--- Select Scan Speed ---")
-    print("1) Fast   (0.5s timeout)")
-    print("2) Normal (1.0s timeout)")
-    print("3) Slow   (2.0s timeout)")
-    print("b) Back to Main Menu")
-    choice = input("Select speed (1-3 or b): ").strip().lower()
-    if choice == 'b': return None
+    console.print("\n[bold]Select Scan Speed:[/bold]")
+    console.print("1) [green]Fast[/green]   (0.5s timeout) - Best for LAN/WiFi")
+    console.print("2) [yellow]Normal[/yellow] (1.0s timeout) - Balanced")
+    console.print("3) [red]Slow[/red]   (2.0s timeout) - For laggy/remote networks")
+    
+    choice = console.input("[bold cyan]Select (1-3): [/bold cyan]").strip()
     if choice == '1': return 0.5
     if choice == '3': return 2.0
-    return 1.0 
+    return 1.0  # Default to Normal
+
+def save_log(content):
+    try:
+        with open(LOG_FILE, "a") as f:
+            f.write(content + "\n")
+    except Exception as e:
+        console.print(f"[red][!] Error saving log: {e}[/red]")
 
 def resolve_target_list(target_input):
     target_list = []
     
-    # --- TYPE 1: IP RANGE ---
+    # TYPE 1: RANGE
     if "-" in target_input:
         parts = target_input.split("-")
         if len(parts) == 2:
             try:
                 start_ip_str = parts[0].strip()
                 end_part_str = parts[1].strip()
-                
-                # Verify start is a valid IP
                 start_ip_obj = ipaddress.IPv4Address(start_ip_str)
                 
-                # --- FLEX RANGE LOGIC START ---
-                # Check if the second part contains a dot (indicating a full IP)
                 if "." in end_part_str:
-                    # User entered: 192.168.1.5 - 192.168.1.10
                     end_ip_obj = ipaddress.IPv4Address(end_part_str)
-                    
-                    # Security Check: Ensure start and end are on same /24 subnet
                     start_octets = str(start_ip_obj).split('.')
                     end_octets = str(end_ip_obj).split('.')
                     
                     if start_octets[:3] != end_octets[:3]:
-                        print(f"{RED}[-] Error: Range scan only supports the same /24 subnet.{RESET}")
+                        console.print("[red]Error: Ranges must be in same /24 subnet.[/red]")
                         return []
-                        
                     end_val = int(end_octets[3])
                     base_ip = ".".join(start_octets[:3])
                 else:
-                    # User entered: 192.168.1.5 - 10
                     end_val = int(end_part_str)
                     octets = str(start_ip_obj).split('.')
                     base_ip = ".".join(octets[:3])
-                # --- FLEX RANGE LOGIC END ---
                 
                 start_val = int(str(start_ip_obj).split('.')[3])
                 
-                if end_val < start_val:
-                    print(f"{RED}[-] Error: End of range is smaller than start.{RESET}")
-                    return []
-                if end_val > 255:
-                    print(f"{RED}[-] Error: Octet cannot exceed 255.{RESET}")
+                if end_val < start_val or end_val > 255:
+                    console.print("[red]Error: Invalid range.[/red]")
                     return []
                 
                 for i in range(start_val, end_val + 1):
                     target_list.append(f"{base_ip}.{i}")
-                    
-                print(f"[*] IP Range Detected. Hosts to scan: {len(target_list)}")
                 return target_list
             except ValueError:
                 pass
 
-    # --- TYPE 2: CIDR ---
+    # TYPE 2: CIDR
     try:
         network = ipaddress.ip_network(target_input, strict=False)
-        if network.num_addresses > 1:
-            for ip in network.hosts():
-                target_list.append(str(ip))
-            print(f"[*] CIDR Detected. Hosts to scan: {len(target_list)}")
-            return target_list
+        for ip in network.hosts():
+            target_list.append(str(ip))
+        return target_list
     except ValueError:
         pass
 
-    # --- TYPE 3: SINGLE HOST ---
+    # TYPE 3: SINGLE HOST
     target_list.append(target_input)
     return target_list
 
-def grab_banner(s, port):
+def scan_port(ip, port, timeout):
     try:
-        if port == 80 or port == 8080:
-            s.send(b'HEAD / HTTP/1.1\r\n\r\n')
-        banner = s.recv(1024).decode().strip()
-        return banner
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        result = s.connect_ex((ip, port))
+        
+        if result == 0:
+            service = COMMON_PORTS.get(port, "Unknown")
+            banner = ""
+            try:
+                s.settimeout(1.0)
+                if port in [80, 8080, 443, 8443]:
+                    s.send(b'HEAD / HTTP/1.1\r\n\r\n')
+                else:
+                    s.send(b'Hello\r\n')
+                
+                banner_bytes = s.recv(1024)
+                banner = banner_bytes.decode('utf-8', errors='ignore').strip()
+            except:
+                banner = None
+            
+            s.close()
+            return (port, service, banner)
+        
+        s.close()
+        return None
     except:
         return None
 
-def scan_single_host(target_ip, ports_list, timeout):
-    findings = []
-    open_count = 0
-    try:
-        for port in ports_list:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.settimeout(timeout)
-            result = s.connect_ex((target_ip, port))
-            if result == 0:
-                open_count += 1
-                service = COMMON_PORTS.get(port, "Unknown")
-                s.settimeout(2.0)
-                banner = grab_banner(s, port)
-                
-                # Apply GREEN color to the finding string
-                line = f"    {GREEN}[+] Port {port:<5} OPEN  --> {service}{RESET}"
-                if banner:
-                    line += f"\n        |__ Banner: {banner}"
-                findings.append(line)
-            s.close()
-    except socket.error:
-        pass
-    return findings, open_count
-
-def print_final_report(scan_results, start_time):
-    print("\n" + "="*60)
-    # Apply YELLOW to the title, then RESET at the end
-    print(f"{YELLOW}FINAL SCAN REPORT - {str(datetime.now())}{RESET}")
-    print(f"Scan Duration: {datetime.now() - start_time}")
-    print("="*60)
+def run_scan(targets, ports, timeout):
+    total_hosts = len(targets)
+    console.print(f"\n[bold green][*] Starting Scan on {total_hosts} hosts (Threads: {DEFAULT_THREADS})...[/bold green]")
+    console.print("[dim][*] Only displaying hosts with OPEN ports.[/dim]\n")
     
-    if not scan_results:
-        print("[*] No open ports found on any targets.")
-    else:
-        for ip, lines in scan_results.items():
-            print(f"\n{CYAN}[*] Host: {ip}{RESET}")
-            for line in lines:
-                print(line)
-    print("\n" + "="*60)
-    print("END OF REPORT")
-    print("="*60)
+    session_log = f"\n=== SCAN SESSION: {datetime.now()} ===\n"
 
-# --- Main Menu ---
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=40, style="blue", complete_style="green"),
+        TextColumn("[bold]{task.completed}/{task.total}"),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        TimeRemainingColumn(),
+        console=console,
+        transient=False 
+    ) as progress:
+        
+        main_task = progress.add_task("Scanning Network...", total=total_hosts)
+
+        for ip in targets:
+            progress.update(main_task, description=f"Scanning {ip}...")
+            
+            open_ports = []
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=DEFAULT_THREADS) as executor:
+                futures = {executor.submit(scan_port, ip, port, timeout): port for port in ports}
+                
+                for future in concurrent.futures.as_completed(futures):
+                    result = future.result()
+                    if result:
+                        open_ports.append(result)
+
+            if open_ports:
+                open_ports.sort(key=lambda x: x[0])
+                
+                table_output = f"\n[bold cyan]Found on {ip}:[/bold cyan]\n"
+                
+                table = Table(show_header=True, header_style="bold magenta", box=None)
+                table.add_column("Port", style="cyan", width=8)
+                table.add_column("Service", style="green")
+                table.add_column("Banner", style="dim")
+                
+                session_log += f"\nHost: {ip}\n"
+
+                for p, s, b in open_ports:
+                    b_text = b[:30] + "..." if b and len(b) > 30 else (b or "-")
+                    table.add_row(str(p), s, b_text)
+                    session_log += f"  [+] {p}/tcp - {s} - {b_text}\n"
+                
+                progress.console.print(table_output)
+                progress.console.print(table)
+            
+            progress.advance(main_task)
+
+    save_log(session_log)
+    console.print(f"\n[bold green][✓] Scan Complete. Saved to {LOG_FILE}[/bold green]")
+
+# --- MAIN ---
 if __name__ == "__main__":
-    print(f"\n--- Python Network Scanner (v{__version__}) ---")
-    print("By: " + __author__)
-    print(f"{RED}[!] WARNING: Use only on authorized networks.{RESET}")
+    console.clear()
+    console.print(Panel.fit(f"[bold green]PYTHON NETWORK SCANNER v{__version__}[/bold green]\nBy: {__author__}", border_style="green"))
     
     while True:
-        try:
-            print("\n" + "="*40)
-            print("MAIN MENU")
-            print("="*40)
-            print("1) Quick Scan (Host + Top common Ports)")
-            print("2) Custom Scan (Specific Port Range)")
-            print("3) Help (User Manual)")
-            print("4) Exit tool")
+        console.print("\n[bold]1)[/bold] Top 100 Ports (Quick)")
+        console.print("[bold]2)[/bold] Custom Range")
+        console.print("[bold]3)[/bold] Help")
+        console.print("[bold]4)[/bold] Exit")
+        
+        choice = console.input("\n[bold cyan]Select > [/bold cyan]").strip()
+        
+        targets = []
+        ports = []
+        
+        if choice == '1':
+            t_in = console.input("Target IP/Range: ")
+            targets = resolve_target_list(t_in)
+            if not targets: continue
             
-            choice = input("Select option: ").strip()
-            print("") 
-
-            # Setup variables
-            targets = []
-            ports_to_scan = []
-            timeout = 1.0
-
-            if choice == '1':
-                t_in = input("Enter Target (IP/CIDR/Range) or 'b' to go BACK: \n").strip()
-                print("") 
-                
-                if t_in.lower() == 'b': continue
-                targets = resolve_target_list(t_in)
-                if not targets: continue 
-                
-                timeout = get_scan_speed()
-                if timeout is None: continue
-                ports_to_scan = list(COMMON_PORTS.keys())
-
-            elif choice == '2':
-                t_in = input("Enter Target (IP/CIDR/Range) or 'b' to go BACK: \n").strip()
-                print("") 
-                
-                if t_in.lower() == 'b': continue
-                targets = resolve_target_list(t_in)
-                if not targets: continue
-
-                try:
-                    s_p = input("Start Port (or 'b'): \n").strip()
-                    if s_p == 'b': continue
-                    start_p = int(s_p)
-                    print("")
-                    
-                    e_p = input("End Port (or 'b'):   \n").strip()
-                    if e_p == 'b': continue
-                    end_p = int(e_p)
-                    print("")
-
-                    ports_to_scan = list(range(start_p, end_p + 1))
-                    timeout = get_scan_speed()
-                    if timeout is None: continue
-                except ValueError:
-                    print("Invalid numbers.")
-                    continue
-
-            elif choice == '3':
-                print_help()
-                continue
+            ports = list(COMMON_PORTS.keys())
+            timeout = get_scan_speed() # ADDED BACK
+            run_scan(targets, ports, timeout)
             
-            elif choice == '4':
-                print("Exiting tool...")
-                sys.exit()
-            else:
-                print("Invalid selection.")
-                continue
-
-            # --- EXECUTION ---
-            scan_results = {} 
-            hosts_online = 0
-            total_ports_open = 0
-            total_hosts = len(targets)
-            start_time = datetime.now()
-
-            print(f"[*] Starting Scan on {total_hosts} hosts...")
-            print("[*] Press Ctrl+C to stop early and see report.\n")
+        elif choice == '2':
+            t_in = console.input("Target IP/Range: ")
+            targets = resolve_target_list(t_in)
+            if not targets: continue
             
             try:
-                for index, ip in enumerate(targets):
-                    progress = f"[*] Progress: {index+1}/{total_hosts}"
-                    stats = f" | Online: {hosts_online} | Open Ports: {total_ports_open}"
-                    current = f" | Scanning: {ip:<15}"
-                    sys.stdout.write(f"\r{progress}{stats}{current}")
-                    sys.stdout.flush()
-
-                    findings, count = scan_single_host(ip, ports_to_scan, timeout)
-
-                    if count > 0:
-                        hosts_online += 1
-                        total_ports_open += count
-                        scan_results[ip] = findings
-
-                sys.stdout.write("\r" + " "*90 + "\r") 
-                print_final_report(scan_results, start_time)
-
-            except KeyboardInterrupt:
-                sys.stdout.write("\r" + " "*90 + "\r")
-                print("\n[!] Scan Aborted by user. Generating partial report...")
-                print_final_report(scan_results, start_time)
-
-        except KeyboardInterrupt:
-            print("\nExiting...")
+                s_p = int(console.input("Start Port: "))
+                e_p = int(console.input("End Port:   "))
+                ports = list(range(s_p, e_p + 1))
+                timeout = get_scan_speed() # ADDED BACK
+                run_scan(targets, ports, timeout)
+            except ValueError:
+                console.print("[red]Invalid port numbers.[/red]")
+                
+        elif choice == '3':
+            print_help()
+        elif choice == '4':
             sys.exit()
